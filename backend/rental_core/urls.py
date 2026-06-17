@@ -1,0 +1,31 @@
+from django.urls import path
+from . import views
+
+urlpatterns = [
+    path('auth/register/', views.register_user, name='register_user'),
+    path('auth/login/', views.login_user, name='login_user'),
+    path('auth/logout/', views.logout_user, name='logout_user'),
+    path('auth/me/', views.current_user, name='current_user'),
+    path('imagekit/auth/', views.imagekit_auth, name='imagekit_auth'),
+    path('imagekit/upload/', views.upload_image, name='upload_image'),
+    path('cars/', views.get_cars, name='get_cars'),
+    path('book-car/', views.book_car, name='book_car'),
+    path('booking/<str:booking_id>/', views.get_booking, name='get_booking'),
+    path('booking/<str:booking_id>/cancel/', views.cancel_booking, name='cancel_booking'),
+    path('reservations/<str:user_id>/', views.get_reservations, name='get_reservations'),
+    path('verify-aadhaar/', views.verify_aadhaar, name='verify_aadhaar'),
+    path('verify-documents/', views.verify_documents, name='verify_documents'),
+    path('send-otp/', views.send_otp, name='send_otp'),
+    path('verify-otp/', views.verify_otp, name='verify_otp'),
+    path('end-ride-otp/', views.end_ride_otp, name='end_ride_otp'),
+    path('verify-end-ride/', views.verify_end_ride, name='verify_end_ride'),
+    path('process-drowsiness/', views.process_drowsiness, name='process_drowsiness'),
+    path('process-phone/', views.process_phone, name='process_phone'),
+    path('admin/safety-logs/', views.get_all_safety_logs, name='get_all_safety_logs'),
+    path('admin/bookings/', views.admin_bookings, name='admin_bookings'),
+    path('admin/bookings/<str:booking_id>/', views.admin_update_booking, name='admin_update_booking'),
+    path('admin/cars/', views.admin_cars, name='admin_cars'),
+    path('admin/cars/<str:car_id>/', views.admin_update_car, name='admin_update_car'),
+    path('admin/damage-reports/', views.admin_damage_reports, name='admin_damage_reports'),
+    path('safety-logs/<str:user_id>/', views.safety_logs, name='safety_logs'),
+]
