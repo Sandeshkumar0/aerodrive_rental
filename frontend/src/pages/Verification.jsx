@@ -11,6 +11,20 @@ const imagekitAuthenticator = async () => {
   return res.json();
 };
 
+const FACE_API_CDN = 'https://unpkg.com/face-api.js@0.22.2/dist/face-api.min.js';
+const FACE_API_MODELS_PATH = '/models';
+
+const loadScript = (src) => new Promise((resolve, reject) => {
+  const existing = document.querySelector(`script[src="${src}"]`);
+  if (existing) return resolve();
+  const script = document.createElement('script');
+  script.src = src;
+  script.async = true;
+  script.onload = () => resolve();
+  script.onerror = (e) => reject(e);
+  document.body.appendChild(script);
+});
+
 export default function Verification() {
   const { bookingId } = useParams();
   const [step, setStep] = useState(1);
@@ -20,8 +34,31 @@ export default function Verification() {
   const [isScanning, setIsScanning] = useState(false);
   const [matchResult, setMatchResult] = useState(null);
   const [error, setError] = useState('');
+  const [faceApiReady, setFaceApiReady] = useState(false);
+  const [facePrecheck, setFacePrecheck] = useState(null);
   const videoRef = useRef(null);
   const navigate = useNavigate();
+
+  useEffect(() => {
+    // Best-effort face-api.js load; degrade gracefully if CDN/models missing.
+    const init = async () => {
+      try {
+        await loadScript(FACE_API_CDN);
+        const api = window.faceapi;
+        if (!api) return;
+
+        // Models must exist in /public/models. If they don't, this will throw.
+        await api.nets.tinyFaceDetector.loadFromUri(FACE_API_MODELS_PATH);
+        await api.nets.faceLandmark68Net.loadFromUri(FACE_API_MODELS_PATH);
+        await api.nets.faceRecognitionNet.loadFromUri(FACE_API_MODELS_PATH);
+        setFaceApiReady(true);
+      } catch {
+        setFaceApiReady(false);
+      }
+    };
+
+    init();
+  }, []);
 
   useEffect(() => {
     if (step !== 2 || !navigator.mediaDevices) return;
@@ -94,9 +131,58 @@ export default function Verification() {
     setIsScanning(false);
   };
 
+  const runFacePrecheck = async () => {
+    setFacePrecheck(null);
+    if (!faceApiReady || !licenseUrl || !selfieUrl) return;
+
+    try {
+      const api = window.faceapi;
+      if (!api) return;
+
+      const detectorOptions = new api.TinyFaceDetectorOptions({ inputSize: 416, scoreThreshold: 0.5 });
+
+      const licenseImg = await api.fetchImage(licenseUrl);
+      const selfieImg = await api.fetchImage(selfieUrl);
+
+      const lic = await api
+        .detectSingleFace(licenseImg, detectorOptions)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      const sel = await api
+        .detectSingleFace(selfieImg, detectorOptions)
+        .withFaceLandmarks()
+        .withFaceDescriptor();
+
+      if (!lic || !sel) {
+        setFacePrecheck({ ok: false, message: 'Face not detected in one of the images (pre-check).' });
+        return;
+      }
+
+      const distance = api.euclideanDistance(lic.descriptor, sel.descriptor);
+      // Very rough mapping to a %; NOT authoritative.
+      const roughSimilarity = Math.max(0, Math.min(100, Math.round((1 - distance) * 100)));
+
+      setFacePrecheck({
+        ok: true,
+        faceDetected: true,
+        distance: Number(distance.toFixed(4)),
+        similarity: roughSimilarity,
+        message: `Face detected (pre-check). Rough similarity: ${roughSimilarity}% (not authoritative).`,
+      });
+    } catch {
+      // Don't block the flow.
+      setFacePrecheck({ ok: false, message: 'Face pre-check unavailable (models missing or blocked).' });
+    }
+  };
+
   const verifyIdentity = async () => {
     setIsScanning(true);
     setError('');
+
+    // Best-effort browser pre-check; never blocks backend verification.
+    await runFacePrecheck();
+
     try {
       const res = await fetch('/api/verify-documents/', {
         method: 'POST',
@@ -152,7 +238,13 @@ export default function Verification() {
         <div className="glass-panel p-8 rounded-3xl border border-white/10 relative overflow-hidden">
           <AnimatePresence mode="wait">
             {step === 1 && (
-              <motion.div key="otp" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 text-center">
+              <motion.div
+                key="otp"
+                initial= opacity: 0, x: 20 
+                animate= opacity: 1, x: 0 
+                exit= opacity: 0, x: -20 
+                className="space-y-6 text-center"
+              >
                 <div className="w-20 h-20 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto">
                   <KeySquare className="w-10 h-10" />
                 </div>
@@ -167,7 +259,12 @@ export default function Verification() {
             )}
 
             {step === 2 && (
-              <motion.div key="docs" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }}>
+              <motion.div
+                key="docs"
+                initial= opacity: 0, x: 20 
+                animate= opacity: 1, x: 0 
+                exit= opacity: 0, x: -20 
+              >
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
                   <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
                     <h3 className="text-xl font-bold text-white mb-4 flex items-center"><Upload className="w-5 h-5 mr-2 text-emerald-400" /> Driver License</h3>
@@ -203,6 +300,18 @@ export default function Verification() {
                   </div>
                 </div>
 
+                {!faceApiReady && (
+                  <div className="text-xs text-zinc-500 mb-4">
+                    Face pre-check unavailable (face-api.js models not loaded). Backend verification will still work.
+                  </div>
+                )}
+
+                {facePrecheck && (
+                  <div className={`text-sm rounded-xl p-3 mb-6 border ${facePrecheck.ok ? 'bg-emerald-500/10 border-emerald-500/30 text-emerald-200' : 'bg-white/5 border-white/10 text-zinc-300'}`}>
+                    {facePrecheck.message}
+                  </div>
+                )}
+
                 {error && <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl p-3 mb-6">{error}</div>}
                 {matchResult && !matchResult.verified && <div className="bg-red-500/10 border border-red-500/30 text-red-300 text-sm rounded-xl p-3 mb-6">Match failed. Confidence: {matchResult.confidence}%</div>}
                 <button onClick={verifyIdentity} disabled={!licenseUrl || !selfieUrl || isScanning} className="w-full py-4 rounded-xl font-bold bg-emerald-500 hover:bg-emerald-400 text-slate-950 transition-colors flex justify-center items-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed">
@@ -212,7 +321,13 @@ export default function Verification() {
             )}
 
             {step === 3 && (
-              <motion.div key="done" initial={{ opacity: 0, x: 20 }} animate={{ opacity: 1, x: 0 }} exit={{ opacity: 0, x: -20 }} className="space-y-6 text-center">
+              <motion.div
+                key="done"
+                initial= opacity: 0, x: 20 
+                animate= opacity: 1, x: 0 
+                exit= opacity: 0, x: -20 
+                className="space-y-6 text-center"
+              >
                 <div className="w-20 h-20 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto">
                   <ShieldCheck className="w-10 h-10" />
                 </div>

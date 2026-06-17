@@ -1,6 +1,10 @@
 import json
 import uuid
 import datetime
+import hashlib
+import hmac
+import re
+
 from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 from django.conf import settings
@@ -29,11 +33,15 @@ safety_logs_collection = db['safety_logs']
 aadhaar_collection = db['aadhaar_records']
 users_collection = db['users']
 
+DL_NUMBER_REGEX_INDIA = re.compile(r'^[A-Z]{2}[ -]?[0-9]{2}[ -]?[0-9]{4}[ -]?[0-9]{7}$')
+
+
 def _json_body(request):
     try:
         return json.loads(request.body or "{}")
     except json.JSONDecodeError:
         return None
+
 
 def _public_user(user):
     if isinstance(user, User):
@@ -55,6 +63,7 @@ def _public_user(user):
         "email": user.get("email"),
     }
 
+
 def _send_booking_otp(email, otp, booking_id):
     if not email:
         return False
@@ -68,9 +77,11 @@ def _send_booking_otp(email, otp, booking_id):
     )
     return True
 
+
 def _auth_user(request):
     auth_result = JWTAuthentication().authenticate(request)
     return auth_result[0] if auth_result else None
+
 
 def _require_admin(request):
     user = _auth_user(request)
@@ -81,12 +92,14 @@ def _require_admin(request):
         return None, JsonResponse({"error": "Admin access required"}, status=403)
     return user, None
 
+
 def _tokens_for_user(user):
     refresh = RefreshToken.for_user(user)
     return {
         "refresh": str(refresh),
         "access": str(refresh.access_token),
     }
+
 
 def _parse_expiry(value):
     if not value:
@@ -96,14 +109,34 @@ def _parse_expiry(value):
         parsed = timezone.make_aware(parsed, timezone.get_current_timezone())
     return parsed
 
+
+def _otp_hash(otp: str, booking_id: str) -> str:
+    """Hash OTP with a server-side secret + booking id context."""
+    secret = getattr(settings, 'SECRET_KEY', '') or ''
+    msg = f"{booking_id}:{otp}".encode('utf-8')
+    return hmac.new(secret.encode('utf-8'), msg, hashlib.sha256).hexdigest()
+
+
 def _booking_otp_is_valid(booking, otp):
-    expected_otp = booking.get("booking_otp") or booking.get("otp_code")
     expires_at = _parse_expiry(booking.get("booking_otp_expires_at") or booking.get("otp_expires_at"))
-    if not expected_otp or str(otp) != str(expected_otp):
-        return False, "Invalid OTP"
     if expires_at and expires_at < timezone.now():
         return False, "OTP expired"
+
+    # New format (preferred): hash stored
+    expected_hash = booking.get("booking_otp_hash")
+    if expected_hash:
+        calc = _otp_hash(str(otp or ''), booking.get('id') or '')
+        if calc != expected_hash:
+            return False, "Invalid OTP"
+        return True, ""
+
+    # Backwards-compatible: plain OTP stored
+    expected_otp = booking.get("booking_otp") or booking.get("otp_code")
+    if not expected_otp or str(otp) != str(expected_otp):
+        return False, "Invalid OTP"
+
     return True, ""
+
 
 def _release_car_for_booking(booking):
     if not booking:
@@ -114,6 +147,7 @@ def _release_car_for_booking(booking):
         {"id": car_id, "reserved_booking": booking_id},
         {"$set": {"availability": True}, "$unset": {"reserved_by": "", "reserved_booking": ""}},
     )
+
 
 @csrf_exempt
 def register_user(request):
@@ -145,6 +179,7 @@ def register_user(request):
     tokens = _tokens_for_user(user)
     return JsonResponse({"success": True, "user": _public_user(user), **tokens})
 
+
 @csrf_exempt
 def login_user(request):
     if request.method != 'POST':
@@ -164,6 +199,7 @@ def login_user(request):
     tokens = _tokens_for_user(user)
     return JsonResponse({"success": True, "user": _public_user(user), **tokens})
 
+
 @csrf_exempt
 def logout_user(request):
     if request.method != 'POST':
@@ -178,11 +214,13 @@ def logout_user(request):
             pass
     return JsonResponse({"success": True})
 
+
 def current_user(request):
     user = _auth_user(request)
     if not user:
         return JsonResponse({"error": "Authentication required"}, status=401)
     return JsonResponse({"user": _public_user(user)})
+
 
 def imagekit_auth(request):
     return JsonResponse({
@@ -190,6 +228,7 @@ def imagekit_auth(request):
         "publicKey": settings.IMAGEKIT_PUBLIC_KEY,
         "urlEndpoint": settings.IMAGEKIT_URL_ENDPOINT,
     })
+
 
 @csrf_exempt
 def upload_image(request):
@@ -210,6 +249,7 @@ def upload_image(request):
     url = upload_to_imagekit(image_b64, file_name=file_name, folder=folder)
     return JsonResponse({"url": url})
 
+
 def get_cars(request):
     cars = list(cars_collection.find({}, {'_id': 0}))
     for c in cars:
@@ -220,6 +260,7 @@ def get_cars(request):
              if endpoint and not endpoint.endswith('/'): endpoint += '/'
              c['image_url'] = endpoint + ik_url
     return JsonResponse(cars, safe=False)
+
 
 @csrf_exempt
 def book_car(request):
@@ -258,7 +299,9 @@ def book_car(request):
         
         booking_id = str(uuid.uuid4())
         otp = otp_service.generate_otp()
-        otp_expires_at = timezone.now() + datetime.timedelta(hours=24)
+
+        # SAFETY: 5-minute expiry (instead of 24h)
+        otp_expires_at = timezone.now() + datetime.timedelta(minutes=5)
 
         booking = {
             "id": booking_id,
@@ -274,10 +317,9 @@ def book_car(request):
             "total_cost": total_cost,
             "status": "pending",
             "access_granted": False,
-            "booking_otp": otp,
-            "otp_code": otp,
+            # store only hashed OTP going forward
+            "booking_otp_hash": _otp_hash(otp, booking_id),
             "booking_otp_expires_at": otp_expires_at.isoformat(),
-            "otp_expires_at": otp_expires_at.isoformat(),
             "otp_verified": False,
             "identity_verified": False,
             "driver_license_url": "",
@@ -306,6 +348,7 @@ def book_car(request):
             "message": "Booking Confirmed! Check your email for OTP",
             "otp_sent_to": user_email
         })
+
 
 @csrf_exempt
 def verify_otp(request):
@@ -346,9 +389,11 @@ def verify_otp(request):
                 "car_unlock_token": f"AE-{uuid.uuid4().hex[:4].upper()}-XK"
             })
 
+
 def get_reservations(request, user_id):
     bookings = list(bookings_collection.find({"user_id": str(user_id)}, {'_id': 0}).sort('_id', -1))
     return JsonResponse(bookings, safe=False)
+
 
 def get_booking(request, booking_id):
     user = _auth_user(request)
@@ -359,6 +404,7 @@ def get_booking(request, booking_id):
     if not booking:
         return JsonResponse({"error": "Booking not found"}, status=404)
     return JsonResponse(booking)
+
 
 def admin_bookings(request):
     _, error = _require_admin(request)
@@ -392,6 +438,7 @@ def admin_bookings(request):
         enriched.append(booking)
 
     return JsonResponse(enriched, safe=False)
+
 
 @csrf_exempt
 def admin_update_booking(request, booking_id):
@@ -442,12 +489,14 @@ def admin_update_booking(request, booking_id):
 
     return JsonResponse({"success": True})
 
+
 def admin_cars(request):
     _, error = _require_admin(request)
     if error:
         return error
     cars = list(cars_collection.find({}, {"_id": 0}))
     return JsonResponse(cars, safe=False)
+
 
 @csrf_exempt
 def admin_update_car(request, car_id):
@@ -476,12 +525,14 @@ def admin_update_car(request, car_id):
     cars_collection.update_one({"id": car_id}, {"$set": updates})
     return JsonResponse({"success": True})
 
+
 def admin_damage_reports(request):
     _, error = _require_admin(request)
     if error:
         return error
     reports = list(bookings_collection.find({"damage_reported": True}, {"_id": 0}).sort('start_date', -1))
     return JsonResponse(reports, safe=False)
+
 
 @csrf_exempt
 def verify_aadhaar(request):
@@ -507,8 +558,18 @@ def verify_aadhaar(request):
                 return JsonResponse({"matched": False, "confidence": round(score * 100, 2)})
         return JsonResponse({"matched": False, "confidence": 0, "error": "Aadhaar not found"})
 
+
 @csrf_exempt
 def verify_documents(request):
+    """
+    Stage 2: Document + selfie verification.
+
+    Safe mock/stub:
+    - Driver license check is a regex validation against an Indian DL number format.
+    - Face match remains authoritative via cnn_verify (mock Siamese CNN).
+
+    TODO: Replace the DL regex with a real DL verification provider (DigiLocker / govt API / KYC vendor).
+    """
     if request.method != 'POST':
         return JsonResponse({"error": "Method not allowed"}, status=405)
 
@@ -525,6 +586,9 @@ def verify_documents(request):
     selfie_url = data.get("selfie_url")
     otp = data.get("otp")
 
+    # optional field (frontend can add later)
+    license_number = (data.get("license_number") or "").strip().upper()
+
     booking = bookings_collection.find_one({"id": booking_id, "user_id": str(user.id)})
     if not booking:
         return JsonResponse({"error": "Booking not found"}, status=404)
@@ -533,6 +597,19 @@ def verify_documents(request):
     if not valid:
         return JsonResponse({"verified": False, "error": error}, status=400)
 
+    # DL check (mock/stub)
+    dl_verified = True
+    if license_number:
+        dl_verified = bool(DL_NUMBER_REGEX_INDIA.match(license_number))
+
+    if not dl_verified:
+        return JsonResponse({
+            "verified": False,
+            "dl_verified": False,
+            "error": "Invalid driver license number format",
+        }, status=400)
+
+    # Face match (authoritative)
     score = cnn_verify.siamese_cosine_match(license_url, selfie_url)
     confidence = round(score * 100, 2)
     verified = score > 0.88
@@ -555,14 +632,18 @@ def verify_documents(request):
                 "driver_license_url": license_url,
                 "driver_selfie_url": selfie_url,
                 "driver_reference_url": selfie_url,
+                "dl_verified": True,
+                "driver_license_number": license_number,
             }}
         )
 
     return JsonResponse({
         "verified": verified,
+        "dl_verified": True,
         "confidence": confidence,
         "access_granted": verified,
     })
+
 
 @csrf_exempt
 def send_otp(request):
@@ -570,6 +651,7 @@ def send_otp(request):
         otp = otp_service.generate_otp()
         otp_service.send_mock_sms("+91 98765 43210", otp)
         return JsonResponse({"sent": True, "masked_phone": "+91 XXXXX X7832"})
+
 
 @csrf_exempt
 def end_ride_otp(request):
@@ -592,6 +674,7 @@ def end_ride_otp(request):
         _send_booking_otp(user_email, otp, booking_id)
         return JsonResponse({"sent": True, "message": "OTP sent to confirm ride end"})
 
+
 @csrf_exempt
 def verify_end_ride(request):
     if request.method == 'POST':
@@ -609,6 +692,7 @@ def verify_end_ride(request):
         bookings_collection.update_one({"id": booking_id}, {"$set": {"status": "completed"}})
         _release_car_for_booking(booking)
         return JsonResponse({"success": True, "message": "Ride completed successfully"})
+
 
 @csrf_exempt
 def cancel_booking(request, booking_id):
@@ -633,7 +717,9 @@ def cancel_booking(request, booking_id):
     _release_car_for_booking(booking)
     return JsonResponse({"success": True, "message": "Booking canceled"})
 
+
 consecutive_low_frames = 0
+
 
 @csrf_exempt
 def process_drowsiness(request):
@@ -671,6 +757,7 @@ def process_drowsiness(request):
             "consecutive_low_frames": consecutive_low_frames
         })
 
+
 @csrf_exempt
 def process_phone(request):
     if request.method == 'POST':
@@ -690,9 +777,11 @@ def process_phone(request):
             
         return JsonResponse({"phone_detected": False, "confidence": round(confidence, 2)})
 
+
 def safety_logs(request, user_id):
     logs = list(safety_logs_collection.find({"user_id": str(user_id)}, {'_id': 0}).sort('timestamp', -1).limit(50))
     return JsonResponse(logs, safe=False)
+
 
 def get_all_safety_logs(request):
     _, error = _require_admin(request)
