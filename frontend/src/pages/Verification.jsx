@@ -238,7 +238,13 @@ export default function Verification() {
         <div className="glass-panel p-8 rounded-3xl border border-white/10 relative overflow-hidden">
           <AnimatePresence mode="wait">
             {step === 1 && (
-              <motion.div key="otp" initial= opacity: 0, x: 20  animate= opacity: 1, x: 0  exit= opacity: 0, x: -20  className="space-y-6 text-center">
+              <motion.div
+                key="otp"
+                initial= opacity: 0, x: 20 
+                animate= opacity: 1, x: 0 
+                exit= opacity: 0, x: -20 
+                className="space-y-6 text-center"
+              >
                 <div className="w-20 h-20 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto">
                   <KeySquare className="w-10 h-10" />
                 </div>
@@ -253,7 +259,12 @@ export default function Verification() {
             )}
 
             {step === 2 && (
-              <motion.div key="docs" initial= opacity: 0, x: 20  animate= opacity: 1, x: 0  exit= opacity: 0, x: -20 >
+              <motion.div
+                key="docs"
+                initial= opacity: 0, x: 20 
+                animate= opacity: 1, x: 0 
+                exit= opacity: 0, x: -20 
+              >
                 <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
                   <div className="bg-white/5 border border-white/10 rounded-2xl p-5">
                     <h3 className="text-xl font-bold text-white mb-4 flex items-center"><Upload className="w-5 h-5 mr-2 text-emerald-400" /> Driver License</h3>
@@ -310,7 +321,13 @@ export default function Verification() {
             )}
 
             {step === 3 && (
-              <motion.div key="done" initial= opacity: 0, x: 20  animate= opacity: 1, x: 0  exit= opacity: 0, x: -20  className="space-y-6 text-center">
+              <motion.div
+                key="done"
+                initial= opacity: 0, x: 20 
+                animate= opacity: 1, x: 0 
+                exit= opacity: 0, x: -20 
+                className="space-y-6 text-center"
+              >
                 <div className="w-20 h-20 bg-emerald-500/20 text-emerald-400 rounded-full flex items-center justify-center mx-auto">
                   <ShieldCheck className="w-10 h-10" />
                 </div>
