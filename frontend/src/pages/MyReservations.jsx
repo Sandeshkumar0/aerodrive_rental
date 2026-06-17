@@ -36,7 +36,7 @@ export default function MyReservations() {
 
   return (
     <div className="w-full min-h-screen pt-24 px-4 sm:px-6 lg:px-8 max-w-7xl mx-auto">
-      <motion.h1 
+      <motion.h1
         initial= opacity: 0, y: -20 
         animate= opacity: 1, y: 0 
         className="text-4xl md:text-5xl font-black font-display tracking-tight text-white mb-10"
